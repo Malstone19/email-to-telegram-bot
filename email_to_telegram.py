@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-Парсинг писем с корпоративной почты и отправка в Telegram-группу.
-Подходит для пересылки писем с тестовыми SMS-кодами.
-"""
 
 import os
 import re
@@ -16,16 +12,13 @@ from email.utils import parsedate_to_datetime
 import requests
 from dotenv import load_dotenv
 
-# Убрать предупреждение при verify=False (корпоративный прокси/SSL)
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# .env из папки скрипта, чтобы работало при любом текущем каталоге
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_script_dir, ".env"))
 load_dotenv()
 
-# Конфиг из переменных окружения
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 IMAP_HOST = os.getenv("IMAP_HOST")
@@ -36,12 +29,10 @@ IMAP_PASSWORD = os.getenv("IMAP_PASSWORD")
 IMAP_FOLDER = os.getenv("IMAP_FOLDER", "INBOX")
 IMAP_TIMEOUT = int(os.getenv("IMAP_TIMEOUT", "30"))
 CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "60"))
-# В корпоративных сетях с перехватом SSL: SKIP_SSL_VERIFY=1
 VERIFY_SSL = os.getenv("SKIP_SSL_VERIFY", "").strip() != "1"
 
 
 def decode_mime_header(s):
-    """Декодирует заголовок письма (тема, от кого)."""
     if s is None:
         return ""
     parts = decode_header(s)
@@ -55,7 +46,6 @@ def decode_mime_header(s):
 
 
 def get_body(msg):
-    """Извлекает текстовое тело письма."""
     body = ""
     if msg.is_multipart():
         for part in msg.walk():
@@ -75,7 +65,6 @@ def get_body(msg):
                         payload = part.get_payload(decode=True)
                         charset = part.get_content_charset() or "utf-8"
                         raw = (payload or b"").decode(charset, errors="replace")
-                        # Убираем теги для краткости
                         body = re.sub(r"<[^>]+>", " ", raw).strip()
                         body = re.sub(r"\s+", " ", body)[:2000]
                         break
@@ -92,21 +81,18 @@ def get_body(msg):
 
 
 def extract_codes(text):
-    """Ищет в тексте типичные коды (цифры 4–8 символов, коды типа 'код: 123456')."""
     codes = []
-    # Паттерны: "код: 123456", "code: 123456", "пароль: 1234", только цифры 4-8 подряд
     for pattern in [
         r"(?:код|code|пароль|password|pin)[:\s]*(\d{4,8})",
-        r"\b(\d{6})\b",  # типичный 6-значный SMS
+        r"\b(\d{6})\b",
         r"\b(\d{4,8})\b",
     ]:
         for m in re.finditer(pattern, text, re.IGNORECASE):
             codes.append(m.group(1))
-    return list(dict.fromkeys(codes))  # без дубликатов
+    return list(dict.fromkeys(codes))
 
 
 def send_telegram(text: str, debug=False):
-    """Отправляет сообщение в Telegram-группу. Возвращает (ok, response_data)."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     if len(text) > 4000:
         text = text[:3997] + "..."
@@ -135,7 +121,6 @@ def send_telegram(text: str, debug=False):
 
 
 def format_email_message(msg) -> str:
-    """Форматирует письмо для отправки в Telegram."""
     subject = decode_mime_header(msg.get("Subject"))
     from_ = decode_mime_header(msg.get("From"))
     date_raw = msg.get("Date")
@@ -159,7 +144,6 @@ def format_email_message(msg) -> str:
     if codes:
         lines.append(f"Коды: {', '.join(codes)}")
     if body:
-        # Ограничиваем превью тела
         preview = body.replace("\n", " ").strip()[:500]
         if len(body) > 500:
             preview += "..."
@@ -169,7 +153,6 @@ def format_email_message(msg) -> str:
 
 
 def fetch_and_forward():
-    """Проверяет почту и пересылает новые письма в Telegram."""
     if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, IMAP_HOST, IMAP_USER, IMAP_PASSWORD]):
         print("Заполните TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, IMAP_* в .env")
         return
@@ -226,7 +209,6 @@ def fetch_and_forward():
 
 
 def test_imap_connection():
-    """Проверяет доступ к почте при запуске."""
     if not all([IMAP_HOST, IMAP_USER, IMAP_PASSWORD]):
         print("Почта: не настроена (IMAP_HOST, IMAP_USER, IMAP_PASSWORD в .env)")
         return
@@ -247,7 +229,6 @@ def test_imap_connection():
             print("Почта: папка", IMAP_FOLDER, "не найдена или недоступна")
             mail.logout()
             return
-        # количество писем в папке
         status, data = mail.search(None, "ALL")
         total = len(data[0].split()) if data and data[0] else 0
         status_unseen, data_unseen = mail.search(None, "UNSEEN")
@@ -273,7 +254,7 @@ def main():
     while True:
         fetch_and_forward()
         time.sleep(CHECK_INTERVAL_SEC)
-        print()  # разделитель между циклами
+        print()
 
 
 if __name__ == "__main__":
