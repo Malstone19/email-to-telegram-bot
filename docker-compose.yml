@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  email-bot:
+    build: .
+    container_name: email-to-telegram-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./.env:/app/.env:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

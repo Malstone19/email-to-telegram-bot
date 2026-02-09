@@ -46,6 +46,77 @@ python email_to_telegram.py
 
 Для постоянной работы можно запустить в фоне или через systemd/supervisor.
 
+## Запуск в Docker
+
+### Быстрый старт с docker-compose
+
+1. Убедитесь, что файл `.env` настроен (см. раздел "Настройка" выше).
+
+2. Запустите контейнер:
+   ```bash
+   docker-compose up -d
+   ```
+
+3. Просмотр логов:
+   ```bash
+   docker-compose logs -f
+   ```
+
+4. Остановка:
+   ```bash
+   docker-compose down
+   ```
+
+### Сборка и запуск без docker-compose
+
+1. Соберите образ:
+   ```bash
+   docker build -t email-to-telegram-bot .
+   ```
+
+2. Запустите контейнер:
+   ```bash
+   docker run -d \
+     --name email-to-telegram-bot \
+     --restart unless-stopped \
+     --env-file .env \
+     email-to-telegram-bot
+   ```
+
+3. Просмотр логов:
+   ```bash
+   docker logs -f email-to-telegram-bot
+   ```
+
+4. Остановка:
+   ```bash
+   docker stop email-to-telegram-bot
+   docker rm email-to-telegram-bot
+   ```
+
+### Развертывание на сервере
+
+Подробная инструкция по развертыванию на стороннем сервере находится в файле [DEPLOY.md](DEPLOY.md).
+
+Краткая версия:
+
+1. Скопируйте проект на сервер (например, через `scp` или `git clone`).
+
+2. На сервере создайте файл `.env` с необходимыми переменными.
+
+3. Установите Docker (если не установлен):
+   ```bash
+   sudo apt-get update && sudo apt-get install -y docker.io docker-compose
+   sudo usermod -aG docker $USER
+   ```
+
+4. Запустите через docker-compose:
+   ```bash
+   docker-compose up -d --build
+   ```
+
+5. Для автоматического запуска при перезагрузке сервера Docker уже настроен через `restart: unless-stopped` в docker-compose.yml.
+
 ## Формат сообщений в Telegram
 
 Для каждого нового письма в группу уходит:
