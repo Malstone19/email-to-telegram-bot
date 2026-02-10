@@ -87,18 +87,6 @@ def get_body(msg):
     return (body or "").strip()[:3000]
 
 
-def extract_codes(text):
-    codes = []
-    for pattern in [
-        r"(?:код|code|пароль|password|pin)[:\s]*(\d{4,8})",
-        r"\b(\d{6})\b",
-        r"\b(\d{4,8})\b",
-    ]:
-        for m in re.finditer(pattern, text, re.IGNORECASE):
-            codes.append(m.group(1))
-    return list(dict.fromkeys(codes))
-
-
 def html_escape(s: str) -> str:
     if not s:
         return ""
@@ -152,9 +140,7 @@ def format_email_message(msg) -> str:
             date_str = date_raw
 
     body = get_body(msg)
-    codes = extract_codes(subject + " " + body)
 
-    # Экранируем для HTML (Telegram parse_mode=HTML)
     lines = [
         "📧 Новое письмо",
         f"Тема: {html_escape(subject or '(без темы)')}",
@@ -166,9 +152,7 @@ def format_email_message(msg) -> str:
         if len(body) > 500:
             preview += "..."
         preview_escaped = html_escape(preview)
-        # Коды в превью делаем гиперссылками
-        for code in codes:
-            preview_escaped = preview_escaped.replace(code, f'<a href="#">{code}</a>')
+        preview_escaped = re.sub(r"(\d+)", r"<code>\1</code>", preview_escaped)
         lines.append(f"\n{preview_escaped}")
 
     return "\n".join(lines)
