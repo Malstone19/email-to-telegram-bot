@@ -4,11 +4,11 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --quiet --no-cache-dir -r requirements.txt
 
 COPY email_to_telegram.py .
 
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+RUN useradd -m -u 1000 appuser && mkdir -p /app/data && chown -R appuser:appuser /app
 USER appuser
 
 CMD ["python", "email_to_telegram.py"]

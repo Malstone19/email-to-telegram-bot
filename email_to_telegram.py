@@ -3,6 +3,7 @@
 import os
 import re
 import ssl
+import sys
 import time
 import imaplib
 import email
@@ -30,6 +31,12 @@ IMAP_FOLDER = os.getenv("IMAP_FOLDER", "INBOX")
 IMAP_TIMEOUT = int(os.getenv("IMAP_TIMEOUT", "30"))
 CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "60"))
 VERIFY_SSL = os.getenv("SKIP_SSL_VERIFY", "").strip() != "1"
+IMAP_STATE_FILE = os.getenv("IMAP_STATE_FILE") or os.path.join(_script_dir, ".imap_last_uid")
+
+
+def log(*args, **kwargs):
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}]", *args, **kwargs)
 
 
 def decode_mime_header(s):
@@ -105,18 +112,18 @@ def send_telegram(text: str, debug=False):
         r = requests.post(url, json=payload, timeout=10, verify=VERIFY_SSL)
         data = r.json()
         if not data.get("ok"):
-            print("Telegram API error:", data.get("description", data))
+            log("Telegram API error:", data.get("description", data))
             return False, data
         if debug:
             result = data.get("result", {})
             chat = result.get("chat", {})
-            print("Telegram ответ: чат id =", chat.get("id"), ", название =", chat.get("title", chat.get("first_name", "?")))
+            log("Telegram ответ: чат id =", chat.get("id"), ", название =", chat.get("title", chat.get("first_name", "?")))
         return True, data
     except requests.exceptions.SSLError as e:
-        print("Telegram SSL error (добавьте в .env: SKIP_SSL_VERIFY=1):", e)
+        log("Telegram SSL error (добавьте в .env: SKIP_SSL_VERIFY=1):", e)
         return False, None
     except Exception as e:
-        print("Telegram request error:", e)
+        log("Telegram request error:", e)
         return False, None
 
 
@@ -152,9 +159,69 @@ def format_email_message(msg) -> str:
     return "\n".join(lines)
 
 
+def _load_last_uid() -> int:
+    try:
+        if not os.path.exists(IMAP_STATE_FILE):
+            return 0
+        with open(IMAP_STATE_FILE, "r", encoding="utf-8") as f:
+            v = f.read().strip()
+            return int(v) if v else 0
+    except Exception:
+        return 0
+
+
+def _save_last_uid(uid: int):
+    try:
+        with open(IMAP_STATE_FILE, "w", encoding="utf-8") as f:
+            f.write(str(uid))
+    except Exception as e:
+        log("Не удалось сохранить состояние IMAP (UID):", e)
+
+
+def init_only():
+    if not all([IMAP_HOST, IMAP_USER, IMAP_PASSWORD]):
+        log("Заполните IMAP_HOST, IMAP_USER, IMAP_PASSWORD в .env")
+        return False
+    try:
+        if IMAP_USE_SSL:
+            if VERIFY_SSL:
+                mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=IMAP_TIMEOUT)
+            else:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=ctx, timeout=IMAP_TIMEOUT)
+        else:
+            mail = imaplib.IMAP4(IMAP_HOST, IMAP_PORT, timeout=IMAP_TIMEOUT)
+        mail.login(IMAP_USER, IMAP_PASSWORD)
+        mail.select(IMAP_FOLDER)
+    except Exception as e:
+        log("IMAP error:", e)
+        return False
+    try:
+        status, data = mail.search(None, "ALL")
+        if status != "OK":
+            log("IMAP search error:", status)
+            return False
+        all_ids = [int(x) for x in (data[0].split() if data and data[0] else [])]
+        if not all_ids:
+            log("В папке нет писем, состояние не меняем.")
+            return True
+        max_id = max(all_ids)
+        _save_last_uid(max_id)
+        log("Первый запуск: записан последний ID =", max_id, ". Всего писем в папке:", len(all_ids))
+        log("Дальше в Telegram будут уходить только новые письма. Можно запускать бота.")
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+    return True
+
+
 def fetch_and_forward():
     if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, IMAP_HOST, IMAP_USER, IMAP_PASSWORD]):
-        print("Заполните TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, IMAP_* в .env")
+        log("Заполните TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, IMAP_* в .env")
         return
 
     try:
@@ -171,21 +238,32 @@ def fetch_and_forward():
         mail.login(IMAP_USER, IMAP_PASSWORD)
         mail.select(IMAP_FOLDER)
     except Exception as e:
-        print("IMAP error:", e)
+        log("IMAP error:", e)
         return
 
     try:
-        status, data = mail.search(None, "UNSEEN")
+        status, data = mail.search(None, "ALL")
         if status != "OK":
-            print("IMAP search error:", status)
-            return
-        ids = data[0].split() if data and data[0] else []
-        if not ids:
-            print("Проверка почты: новых (непрочитанных) писем нет")
+            log("IMAP search error:", status)
             return
 
-        print(f"Проверка почты: найдено непрочитанных писем: {len(ids)}")
-        for eid in ids:
+        all_ids = [int(x) for x in (data[0].split() if data and data[0] else [])]
+        if not all_ids:
+            log("Проверка почты: писем нет")
+            return
+
+        last_uid = _load_last_uid()
+        new_ids = [i for i in all_ids if i > last_uid]
+        if not new_ids:
+            log("Проверка почты: новых писем нет (по UID)")
+            return
+
+        new_ids.sort()
+        log(f"Проверка почты: найдено новых писем по UID: {len(new_ids)}")
+
+        processed = []
+        for eid_int in new_ids:
+            eid = str(eid_int).encode()
             try:
                 status, data = mail.fetch(eid, "(RFC822)")
                 if status != "OK" or not data:
@@ -195,12 +273,18 @@ def fetch_and_forward():
                 text = format_email_message(msg)
                 ok, _ = send_telegram(text)
                 if ok:
-                    mail.store(eid, "+FLAGS", "\\Seen")
-                    print("  → отправлено в Telegram")
+                    try:
+                        mail.store(eid, "+FLAGS", "\\Seen")
+                    except Exception:
+                        pass
+                    processed.append(eid_int)
+                    log("  → отправлено в Telegram")
                 else:
-                    print("  → ошибка отправки в Telegram")
+                    log("  → ошибка отправки в Telegram")
             except Exception as e:
-                print("Error processing email:", e)
+                log("Error processing email:", e)
+        if processed:
+            _save_last_uid(max(processed))
     finally:
         try:
             mail.logout()
@@ -210,7 +294,7 @@ def fetch_and_forward():
 
 def test_imap_connection():
     if not all([IMAP_HOST, IMAP_USER, IMAP_PASSWORD]):
-        print("Почта: не настроена (IMAP_HOST, IMAP_USER, IMAP_PASSWORD в .env)")
+        log("Почта: не настроена (IMAP_HOST, IMAP_USER, IMAP_PASSWORD в .env)")
         return
     try:
         if IMAP_USE_SSL:
@@ -226,7 +310,7 @@ def test_imap_connection():
         mail.login(IMAP_USER, IMAP_PASSWORD)
         status, _ = mail.select(IMAP_FOLDER)
         if status != "OK":
-            print("Почта: папка", IMAP_FOLDER, "не найдена или недоступна")
+            log("Почта: папка", IMAP_FOLDER, "не найдена или недоступна")
             mail.logout()
             return
         status, data = mail.search(None, "ALL")
@@ -234,28 +318,32 @@ def test_imap_connection():
         status_unseen, data_unseen = mail.search(None, "UNSEEN")
         unseen = len(data_unseen[0].split()) if data_unseen and data_unseen[0] else 0
         mail.logout()
-        print("Почта: подключение OK, папка", IMAP_FOLDER, "— всего писем:", total, ", непрочитанных:", unseen)
+        log("Почта: подключение OK, папка", IMAP_FOLDER, "— всего писем:", total, ", непрочитанных:", unseen)
     except Exception as e:
-        print("Почта: ошибка подключения —", e)
+        log("Почта: ошибка подключения —", e)
 
 
 def main():
-    print("Email → Telegram: запуск. Интервал проверки:", CHECK_INTERVAL_SEC, "сек")
-    print("SSL проверка при запросах:", "выкл" if not VERIFY_SSL else "вкл")
+    log("Email → Telegram: запуск. Интервал проверки:", CHECK_INTERVAL_SEC, "сек")
+    log("SSL проверка при запросах:", "выкл" if not VERIFY_SSL else "вкл")
     test_imap_connection()
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         ok, data = send_telegram("🔔 Бот запущен, ожидаю новые письма с почты.", debug=True)
         if ok:
             chat = (data or {}).get("result", {}).get("chat", {})
             name = chat.get("title") or chat.get("first_name") or "?"
-            print("Тест: сообщение отправлено в чат:", name, "(id:", chat.get("id"), ")")
+            log("Тест: сообщение отправлено в чат:", name, "(id:", chat.get("id"), ")")
         else:
-            print("Тест: не удалось отправить в группу — проверьте TELEGRAM_CHAT_ID и токен.")
+            log("Тест: не удалось отправить в группу — проверьте TELEGRAM_CHAT_ID и токен.")
     while True:
         fetch_and_forward()
         time.sleep(CHECK_INTERVAL_SEC)
-        print()
+        log("")
 
 
 if __name__ == "__main__":
+    if "--init-only" in sys.argv:
+        log("Режим первого запуска: записываю текущий макс. ID, письма не пересылаются.")
+        ok = init_only()
+        sys.exit(0 if ok else 1)
     main()
