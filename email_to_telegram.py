@@ -99,7 +99,17 @@ def extract_codes(text):
     return list(dict.fromkeys(codes))
 
 
-def send_telegram(text: str, debug=False):
+def html_escape(s: str) -> str:
+    if not s:
+        return ""
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def send_telegram(text: str, debug=False, parse_mode=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     if len(text) > 4000:
         text = text[:3997] + "..."
@@ -108,6 +118,8 @@ def send_telegram(text: str, debug=False):
         "text": text,
         "disable_web_page_preview": True,
     }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
         r = requests.post(url, json=payload, timeout=10, verify=VERIFY_SSL)
         data = r.json()
@@ -142,19 +154,22 @@ def format_email_message(msg) -> str:
     body = get_body(msg)
     codes = extract_codes(subject + " " + body)
 
+    # Экранируем для HTML (Telegram parse_mode=HTML)
     lines = [
         "📧 Новое письмо",
-        f"Тема: {subject or '(без темы)'}",
-        f"От: {from_ or '(неизвестно)'}",
+        f"Тема: {html_escape(subject or '(без темы)')}",
+        f"От: {html_escape(from_ or '(неизвестно)')}",
         f"Дата: {date_str}",
     ]
-    if codes:
-        lines.append(f"Коды: {', '.join(codes)}")
     if body:
         preview = body.replace("\n", " ").strip()[:500]
         if len(body) > 500:
             preview += "..."
-        lines.append(f"\n{preview}")
+        preview_escaped = html_escape(preview)
+        # Коды в превью делаем гиперссылками
+        for code in codes:
+            preview_escaped = preview_escaped.replace(code, f'<a href="#">{code}</a>')
+        lines.append(f"\n{preview_escaped}")
 
     return "\n".join(lines)
 
@@ -271,7 +286,7 @@ def fetch_and_forward():
                 raw = data[0][1]
                 msg = email.message_from_bytes(raw)
                 text = format_email_message(msg)
-                ok, _ = send_telegram(text)
+                ok, _ = send_telegram(text, parse_mode="HTML")
                 if ok:
                     try:
                         mail.store(eid, "+FLAGS", "\\Seen")
