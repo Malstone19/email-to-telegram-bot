@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import os
 import re
 import ssl
@@ -117,36 +115,17 @@ def send_telegram(text: str, debug=False, parse_mode=None):
         return False, None
 
 
-def _shorten_address(addr: str, max_len: int = 30) -> str:
-    """Упрощаем адрес для строки From/To (убираем угловые скобки, обрезаем)."""
-    if not addr:
-        return addr
-    # Убрать <email> обёртку, оставить имя или адрес
-    m = re.search(r"^([^<]+)<([^>]+)>$", addr.strip())
-    if m:
-        name, email_part = m.group(1).strip(), m.group(2).strip()
-        return (name or email_part)[:max_len]
-    return addr.strip()[:max_len]
-
-
 def format_email_message(msg) -> str:
     subject = decode_mime_header(msg.get("Subject"))
-    from_ = _shorten_address(decode_mime_header(msg.get("From")) or "")
-    to_ = _shorten_address(decode_mime_header(msg.get("To")) or "") or (IMAP_USER or "")
-
     body = get_body(msg)
 
-    # Формат как у SMS Emulator: заголовок, затем текст
-    header = f"SMS Emulator From= {from_ or '(неизвестно)'}  To= {to_ or '-'}"
     parts = []
     if subject:
         parts.append(subject)
     if body:
         preview = body[:2000] if len(body) <= 2000 else body[:1997] + "..."
         parts.append(preview)
-    text = "\n".join(parts).strip() or "(нет текста)"
-
-    return f"{header}\n{text}"
+    return "\n".join(parts).strip() or "(нет текста)"
 
 
 def _load_last_uid() -> int:
