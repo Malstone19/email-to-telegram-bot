@@ -87,16 +87,6 @@ def get_body(msg):
     return (body or "").strip()[:3000]
 
 
-def html_escape(s: str) -> str:
-    if not s:
-        return ""
-    return (
-        s.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-
-
 def send_telegram(text: str, debug=False, parse_mode=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     if len(text) > 4000:
@@ -127,35 +117,36 @@ def send_telegram(text: str, debug=False, parse_mode=None):
         return False, None
 
 
+def _shorten_address(addr: str, max_len: int = 30) -> str:
+    """Упрощаем адрес для строки From/To (убираем угловые скобки, обрезаем)."""
+    if not addr:
+        return addr
+    # Убрать <email> обёртку, оставить имя или адрес
+    m = re.search(r"^([^<]+)<([^>]+)>$", addr.strip())
+    if m:
+        name, email_part = m.group(1).strip(), m.group(2).strip()
+        return (name or email_part)[:max_len]
+    return addr.strip()[:max_len]
+
+
 def format_email_message(msg) -> str:
     subject = decode_mime_header(msg.get("Subject"))
-    from_ = decode_mime_header(msg.get("From"))
-    date_raw = msg.get("Date")
-    date_str = ""
-    if date_raw:
-        try:
-            dt = parsedate_to_datetime(date_raw)
-            date_str = dt.strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            date_str = date_raw
+    from_ = _shorten_address(decode_mime_header(msg.get("From")) or "")
+    to_ = _shorten_address(decode_mime_header(msg.get("To")) or "") or (IMAP_USER or "")
 
     body = get_body(msg)
 
-    lines = [
-        "📧 Новое письмо",
-        f"Тема: {html_escape(subject or '(без темы)')}",
-        f"От: {html_escape(from_ or '(неизвестно)')}",
-        f"Дата: {date_str}",
-    ]
+    # Формат как у SMS Emulator: заголовок, затем текст
+    header = f"SMS Emulator From= {from_ or '(неизвестно)'}  To= {to_ or '-'}"
+    parts = []
+    if subject:
+        parts.append(subject)
     if body:
-        preview = body.replace("\n", " ").strip()[:500]
-        if len(body) > 500:
-            preview += "..."
-        preview_escaped = html_escape(preview)
-        preview_escaped = re.sub(r"(\d+)", r"<code>\1</code>", preview_escaped)
-        lines.append(f"\n{preview_escaped}")
+        preview = body[:2000] if len(body) <= 2000 else body[:1997] + "..."
+        parts.append(preview)
+    text = "\n".join(parts).strip() or "(нет текста)"
 
-    return "\n".join(lines)
+    return f"{header}\n{text}"
 
 
 def _load_last_uid() -> int:
@@ -270,7 +261,7 @@ def fetch_and_forward():
                 raw = data[0][1]
                 msg = email.message_from_bytes(raw)
                 text = format_email_message(msg)
-                ok, _ = send_telegram(text, parse_mode="HTML")
+                ok, _ = send_telegram(text)
                 if ok:
                     try:
                         mail.store(eid, "+FLAGS", "\\Seen")
